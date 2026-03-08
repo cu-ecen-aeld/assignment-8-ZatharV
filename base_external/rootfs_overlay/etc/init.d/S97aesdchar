@@ -1,35 +1,66 @@
 #!/bin/sh
+# Init script for aesdchar kernel module
+# S97 - loads before S99aesdsocket, stops after it (reverse order)
+
 DRIVER_NAME="aesdchar"
 DEVICE_NAME="aesdchar"
 MODE="664"
 
+# Find the .ko path - buildroot installs under /lib/modules/$(uname -r)/extra/
+KO_PATH="/lib/modules/$(uname -r)/extra/${DRIVER_NAME}.ko"
+
 case "$1" in
     start)
-        echo "Loading aesdchar module"
-        modprobe ${DRIVER_NAME} || insmod /lib/modules/$(uname -r)/extra/${DRIVER_NAME}.ko
-        MAJOR=$(awk "\$2==\"${DRIVER_NAME}\" {print \$1}" /proc/devices)
-        if [ -z "${MAJOR}" ]; then
-            echo "Failed to find major number for ${DRIVER_NAME}"
+        echo "Loading ${DRIVER_NAME} module"
+
+        # FIX 1: Try insmod first (direct path), fall back to modprobe
+        if [ -f "${KO_PATH}" ]; then
+            insmod "${KO_PATH}"
+        else
+            modprobe "${DRIVER_NAME}"
+        fi
+
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to load ${DRIVER_NAME}" >&2
             exit 1
         fi
-        if [ ! -e /dev/${DEVICE_NAME} ]; then
-            mknod /dev/${DEVICE_NAME} c ${MAJOR} 0
-            chmod ${MODE} /dev/${DEVICE_NAME}
+
+        # FIX 2: Get major number AFTER successful load
+        MAJOR=$(awk "\$2==\"${DRIVER_NAME}\" {print \$1}" /proc/devices)
+        if [ -z "${MAJOR}" ]; then
+            echo "ERROR: Failed to find major number for ${DRIVER_NAME}" >&2
+            exit 1
         fi
-        echo "aesdchar loaded, major=${MAJOR}"
-        ;;
-    stop)
-        echo "Unloading aesdchar module"
+
+        # FIX 3: Always remove and recreate device node on start
+        # so major number is always correct after reload
         rm -f /dev/${DEVICE_NAME}
-        rmmod ${DRIVER_NAME} || true
+        mknod /dev/${DEVICE_NAME} c ${MAJOR} 0
+        chmod ${MODE} /dev/${DEVICE_NAME}
+
+        echo "${DRIVER_NAME} loaded successfully, major=${MAJOR}"
         ;;
+
+    stop)
+        echo "Unloading ${DRIVER_NAME} module"
+
+        # FIX 4: rmmod first, then remove device node
+        # Removing the node first while driver is busy causes issues
+        rmmod ${DRIVER_NAME} 2>/dev/null || true
+        rm -f /dev/${DEVICE_NAME}
+
+        echo "${DRIVER_NAME} unloaded"
+        ;;
+
     restart)
         $0 stop
         $0 start
         ;;
+
     *)
         echo "Usage: $0 {start|stop|restart}"
         exit 1
         ;;
 esac
+
 exit 0
